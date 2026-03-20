@@ -6,7 +6,7 @@ from llm_budget.exceptions import (
     LocalRateLimitError,
     PricingMatrixOutdatedWarning,
 )
-from llm_budget.pricing import PricingRegistry
+from llm_budget.pricing import PricingRegistry, default_registry
 from llm_budget.rate_limiter import RateLimiter
 from llm_budget.reporter import CostReporter
 from llm_budget.store import UsageStore
@@ -22,5 +22,6 @@ __all__ = [
     "RateLimiter",
     "UsageStore",
     "__version__",
+    "default_registry",
     "track_costs",
 ]

@@ -6,6 +6,7 @@ import importlib
 import sys
 from typing import Any
 
+import pytest
 from pytest import approx
 
 
@@ -22,6 +23,7 @@ def test_full_public_api_importable() -> None:
         "RateLimiter",
         "UsageStore",
         "__version__",
+        "default_registry",
         "track_costs",
     ]
     for name in expected_names:
@@ -120,10 +122,11 @@ def test_pricing_registry_register_and_compute() -> None:
 
 def test_pricing_registry_unknown_model_returns_zero() -> None:
     """Unknown model should return 0.0 cost, not crash."""
-    from llm_budget import PricingRegistry
+    from llm_budget import PricingMatrixOutdatedWarning, PricingRegistry
 
     registry = PricingRegistry()
-    cost = registry.get_cost("unknown-model", input_tokens=100, output_tokens=50)
+    with pytest.warns(PricingMatrixOutdatedWarning):
+        cost = registry.get_cost("unknown-model", input_tokens=100, output_tokens=50)
     assert cost == 0.0
 
 
@@ -313,3 +316,86 @@ def test_full_wiring_decorator_with_registry_and_store(tmp_db_path: str) -> None
     store.log_usage("e2e-test", "gpt-4o", 50, 25, cost)
     reporter.report_call("gpt-4o", 50, 25, cost)
     reporter.report_session()
+
+
+def test_default_registry_importable() -> None:
+    """``from llm_budget import default_registry`` works and has models loaded."""
+    from llm_budget import default_registry
+
+    assert default_registry is not None
+    assert len(default_registry.list_models()) > 0
+
+
+def test_default_registry_has_builtin_models() -> None:
+    """default_registry ships with pricing for well-known models."""
+    from llm_budget import default_registry
+
+    assert default_registry.has_model("gpt-4o") is True
+
+
+def test_default_registry_cost_calculation() -> None:
+    """default_registry.get_cost returns the expected value for builtin pricing."""
+    from llm_budget import default_registry
+
+    # gpt-4o builtin: input 2.5e-06, output 10.0e-06
+    cost = default_registry.get_cost("gpt-4o", 1000, 500)
+    expected = 1000 * 2.5e-06 + 500 * 10.0e-06  # 0.0025 + 0.005 = 0.0075
+    assert cost == approx(expected)
+
+
+def test_pricing_registry_with_decorator() -> None:
+    """A separate PricingRegistry can compute cost for the model the decorator tracks."""
+    from llm_budget import PricingRegistry, track_costs
+
+    registry = PricingRegistry()
+    registry.register_model("gpt-4o", 2.5e-06, 10.0e-06)
+
+    @track_costs(project="reg-test", model="gpt-4o")
+    def call_llm() -> dict[str, Any]:
+        return {
+            "model": "gpt-4o",
+            "choices": [{"message": {"content": "Hi"}}],
+            "usage": {"prompt_tokens": 200, "completion_tokens": 100},
+        }
+
+    result = call_llm()
+    assert result["model"] == "gpt-4o"
+
+    cost = registry.get_cost("gpt-4o", input_tokens=200, output_tokens=100)
+    expected = 200 * 2.5e-06 + 100 * 10.0e-06
+    assert cost == approx(expected)
+    assert cost > 0
+
+
+def test_prefix_matching_end_to_end() -> None:
+    """Versioned model name resolves via prefix matching and returns non-zero cost."""
+    from llm_budget import PricingRegistry
+
+    registry = PricingRegistry()
+    cost = registry.get_cost("gpt-4o-2024-08-06", 1000, 500)
+    assert cost > 0
+
+
+def test_unknown_model_warning_integration() -> None:
+    """Querying a totally unknown model emits PricingMatrixOutdatedWarning."""
+    from llm_budget import PricingMatrixOutdatedWarning, PricingRegistry
+
+    registry = PricingRegistry()
+
+    with pytest.warns(PricingMatrixOutdatedWarning):
+        cost = registry.get_cost("totally-unknown-model-xyz", 100, 50)
+
+    assert cost == 0.0
+
+
+def test_fallback_pricing_end_to_end() -> None:
+    """Registry with fallback pricing uses it for unknown models."""
+    from llm_budget import PricingRegistry
+
+    registry = PricingRegistry()
+    registry.set_fallback_pricing(1e-05, 2e-05)
+
+    cost = registry.get_cost("my-custom-model", 1000, 500)
+    expected = 1000 * 1e-05 + 500 * 2e-05  # 0.01 + 0.01 = 0.02
+    assert cost == approx(expected)
+    assert cost > 0

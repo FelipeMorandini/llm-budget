@@ -65,7 +65,11 @@ class PricingRegistry:
         input_cost_per_token: float,
         output_cost_per_token: float,
     ) -> None:
-        """Set fallback pricing used for any model not in the registry."""
+        """Set fallback pricing used for any model not yet resolved.
+
+        Note: models already queried (and cached as unknown) will not
+        retroactively use the fallback. Set fallback before first use.
+        """
         with self._lock:
             self._fallback = (input_cost_per_token, output_cost_per_token)
 
@@ -92,19 +96,23 @@ class PricingRegistry:
         if pricing is not None:
             return input_tokens * pricing[0] + output_tokens * pricing[1]
 
-        # Try fallback
-        if self._fallback is not None:
-            with self._lock:
-                self._models[model] = self._fallback
-            return input_tokens * self._fallback[0] + output_tokens * self._fallback[1]
-
-        # Unknown model — warn once, then cache (0, 0) to avoid repeated warnings
-        warnings.warn(
-            f"Model '{model}' not found in pricing registry. Cost will be reported as $0.00.",
-            PricingMatrixOutdatedWarning,
-            stacklevel=2,
-        )
+        # Fallback or unknown — guard with lock for atomic check-and-cache
         with self._lock:
+            # Re-check under lock (another thread may have resolved it)
+            pricing = self._models.get(model)
+            if pricing is not None:
+                return input_tokens * pricing[0] + output_tokens * pricing[1]
+
+            if self._fallback is not None:
+                self._models[model] = self._fallback
+                return input_tokens * self._fallback[0] + output_tokens * self._fallback[1]
+
+            # Unknown model — warn once, then cache (0, 0)
+            warnings.warn(
+                f"Model '{model}' not found in pricing registry. Cost will be reported as $0.00.",
+                PricingMatrixOutdatedWarning,
+                stacklevel=2,
+            )
             self._models[model] = (0.0, 0.0)
         return 0.0
 

@@ -24,6 +24,7 @@ def test_full_public_api_importable() -> None:
         "UsageStore",
         "__version__",
         "default_registry",
+        "set_store",
         "track_costs",
     ]
     for name in expected_names:
@@ -75,23 +76,31 @@ def test_track_costs_preserves_function_metadata() -> None:
     assert my_special_func.__doc__ == "My docstring."
 
 
-def test_track_costs_with_all_kwargs() -> None:
+def test_track_costs_with_all_kwargs(tmp_db_path: str) -> None:
     """Decorator accepts all documented keyword arguments without error."""
-    from llm_budget import track_costs
+    from llm_budget import UsageStore, set_store, track_costs
 
-    @track_costs(
-        project="integration-test",
-        model="gpt-4o",
-        max_budget=50.0,
-        reset="monthly",
-        rate_limit=60,
-        tpm_limit=100000,
-        extract_usage=lambda resp: ("gpt-4o", 10, 5),
-    )
-    def call_llm() -> dict[str, Any]:
-        return {"result": "ok"}
+    store = UsageStore(db_path=tmp_db_path)
+    set_store(store)
 
-    assert call_llm() == {"result": "ok"}
+    try:
+
+        @track_costs(
+            project="integration-test",
+            model="gpt-4o",
+            max_budget=50.0,
+            reset="monthly",
+            rate_limit=60,
+            tpm_limit=100000,
+            extract_usage=lambda resp: ("gpt-4o", 10, 5),
+        )
+        def call_llm() -> dict[str, Any]:
+            return {"result": "ok"}
+
+        assert call_llm() == {"result": "ok"}
+    finally:
+        store.close()
+        set_store(None)  # type: ignore[arg-type]
 
 
 def test_track_costs_passes_args_and_kwargs() -> None:
@@ -538,3 +547,206 @@ def test_store_default_path_resolves() -> None:
     store = UsageStore()
     expected = str(Path.home() / ".llm_budget.db")
     assert store._db_path == expected
+
+
+# ---------------------------------------------------------------------------
+# Integration tests: decorator + store + pricing pipeline
+# ---------------------------------------------------------------------------
+
+
+def test_full_pipeline_extract_usage(tmp_db_path: str) -> None:
+    """Decorator with extract_usage logs cost correctly and returns response unchanged."""
+    from llm_budget import UsageStore, default_registry, set_store, track_costs
+
+    store = UsageStore(db_path=tmp_db_path)
+    set_store(store)
+
+    try:
+        original_response = {"answer": "Hello, world!"}
+
+        @track_costs(
+            project="pipeline-test",
+            extract_usage=lambda resp: ("gpt-4o", 1000, 500),
+        )
+        def call_llm() -> dict[str, Any]:
+            return original_response
+
+        result = call_llm()
+
+        # Response returned unchanged
+        assert result is original_response
+        assert result == {"answer": "Hello, world!"}
+
+        # Cost matches registry calculation
+        expected_cost = default_registry.get_cost("gpt-4o", 1000, 500)
+        assert store.get_total_cost("pipeline-test") == approx(expected_cost)
+
+        # Exactly 1 log entry with correct fields
+        logs = store.get_usage_logs("pipeline-test")
+        assert len(logs) == 1
+        entry = logs[0]
+        assert entry["project"] == "pipeline-test"
+        assert entry["model"] == "gpt-4o"
+        assert entry["input_tokens"] == 1000
+        assert entry["output_tokens"] == 500
+        assert entry["cost"] == approx(expected_cost)
+    finally:
+        store.close()
+        set_store(None)  # type: ignore[arg-type]
+
+
+def test_budget_enforcement_across_calls(tmp_db_path: str) -> None:
+    """BudgetExceededError is raised when accumulated cost reaches max_budget."""
+    from llm_budget import (
+        BudgetExceededError,
+        UsageStore,
+        default_registry,
+        set_store,
+        track_costs,
+    )
+
+    store = UsageStore(db_path=tmp_db_path)
+    set_store(store)
+
+    try:
+        per_call_cost = default_registry.get_cost("gpt-4o", 1000, 500)
+        max_budget = 0.05
+
+        @track_costs(
+            project="budget-test",
+            max_budget=max_budget,
+            extract_usage=lambda resp: ("gpt-4o", 1000, 500),
+        )
+        def call_llm() -> dict[str, Any]:
+            return {"result": "ok"}
+
+        call_count = 0
+        with pytest.raises(BudgetExceededError):
+            for _ in range(1000):  # upper bound to prevent infinite loop
+                call_llm()
+                call_count += 1
+
+        # At least one call succeeded before the budget was exceeded
+        assert call_count >= 1
+
+        # Total cost should be under the budget (the exceeding call was blocked)
+        total_cost = store.get_total_cost("budget-test")
+        assert total_cost <= max_budget + per_call_cost  # last successful call may push near/over
+        assert total_cost == approx(call_count * per_call_cost)
+    finally:
+        store.close()
+        set_store(None)  # type: ignore[arg-type]
+
+
+def test_decorator_with_pricing_registry(tmp_db_path: str) -> None:
+    """Cost logged via decorator matches default_registry.get_cost exactly."""
+    from llm_budget import UsageStore, default_registry, set_store, track_costs
+
+    store = UsageStore(db_path=tmp_db_path)
+    set_store(store)
+
+    try:
+        model = "gpt-4o"
+        input_tokens = 2000
+        output_tokens = 750
+
+        @track_costs(
+            project="pricing-test",
+            extract_usage=lambda resp: (model, input_tokens, output_tokens),
+        )
+        def call_llm() -> dict[str, Any]:
+            return {"content": "response"}
+
+        call_llm()
+
+        expected_cost = default_registry.get_cost(model, input_tokens, output_tokens)
+        logs = store.get_usage_logs("pricing-test")
+        assert len(logs) == 1
+        assert logs[0]["cost"] == approx(expected_cost)
+        assert store.get_total_cost("pricing-test") == approx(expected_cost)
+    finally:
+        store.close()
+        set_store(None)  # type: ignore[arg-type]
+
+
+def test_decorator_bare_no_tracking_on_plain_response(tmp_db_path: str) -> None:
+    """Bare @track_costs on a function returning a plain string logs nothing."""
+    from llm_budget import UsageStore, set_store, track_costs
+
+    store = UsageStore(db_path=tmp_db_path)
+    set_store(store)
+
+    try:
+
+        @track_costs
+        def call_llm() -> str:
+            return "just a plain string"
+
+        result = call_llm()
+        assert result == "just a plain string"
+
+        # auto_detect returns None for a plain string, no extract_usage provided
+        logs = store.get_usage_logs("default")
+        assert len(logs) == 0
+        assert store.get_total_cost("default") == approx(0.0)
+    finally:
+        store.close()
+        set_store(None)  # type: ignore[arg-type]
+
+
+def test_decorator_model_override_with_store(tmp_db_path: str) -> None:
+    """Decorator model= parameter overrides the model returned by extract_usage."""
+    from llm_budget import UsageStore, set_store, track_costs
+
+    store = UsageStore(db_path=tmp_db_path)
+    set_store(store)
+
+    try:
+
+        @track_costs(
+            project="override-test",
+            model="gpt-4o",
+            extract_usage=lambda resp: ("detected", 500, 200),
+        )
+        def call_llm() -> dict[str, Any]:
+            return {"result": "ok"}
+
+        call_llm()
+
+        logs = store.get_usage_logs("override-test")
+        assert len(logs) == 1
+        assert logs[0]["model"] == "gpt-4o"
+        # Confirm it is NOT the detected model
+        assert logs[0]["model"] != "detected"
+    finally:
+        store.close()
+        set_store(None)  # type: ignore[arg-type]
+
+
+def test_budget_exceeded_message_contains_project(tmp_db_path: str) -> None:
+    """BudgetExceededError message includes the project name."""
+    from llm_budget import BudgetExceededError, UsageStore, set_store, track_costs
+
+    store = UsageStore(db_path=tmp_db_path)
+    set_store(store)
+
+    try:
+        project_name = "my-important-project"
+
+        @track_costs(
+            project=project_name,
+            max_budget=0.0001,
+            extract_usage=lambda resp: ("gpt-4o", 1000, 500),
+        )
+        def call_llm() -> dict[str, Any]:
+            return {"result": "ok"}
+
+        # First call should succeed and push cost over the tiny budget
+        call_llm()
+
+        # Second call should raise because budget is exceeded
+        with pytest.raises(BudgetExceededError, match=project_name):
+            call_llm()
+    finally:
+        store.close()
+        set_store(None)  # type: ignore[arg-type]

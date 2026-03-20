@@ -21,6 +21,8 @@ A lightweight, drop-in Python decorator to track costs, monitor token usage, and
 
 ```bash
 pip install llm-budget
+# or, with uv
+uv add llm-budget
 ```
 
 ### Basic Usage (Auto-detect)

@@ -45,18 +45,23 @@ class UsageStore:
             # Re-check under lock
             if self._conn is not None:
                 return self._conn
-            db_path = Path(self._db_path)
-            db_path.parent.mkdir(parents=True, exist_ok=True)
-            is_new = not db_path.exists()
-            conn = sqlite3.connect(self._db_path, check_same_thread=False)
-            if is_new:
-                os.chmod(self._db_path, stat.S_IRUSR | stat.S_IWUSR)  # 0o600
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA busy_timeout=5000")
-            conn.execute("PRAGMA synchronous=NORMAL")
-            self._init_schema(conn)
-            self._conn = conn
-            return conn
+            try:
+                db_path = Path(self._db_path)
+                db_path.parent.mkdir(parents=True, exist_ok=True)
+                is_new = not db_path.exists()
+                conn = sqlite3.connect(self._db_path, check_same_thread=False)
+                if is_new:
+                    os.chmod(self._db_path, stat.S_IRUSR | stat.S_IWUSR)
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA busy_timeout=5000")
+                conn.execute("PRAGMA synchronous=NORMAL")
+                self._init_schema(conn)
+                self._conn = conn
+                return conn
+            except OSError as exc:
+                raise sqlite3.OperationalError(
+                    f"Failed to initialize store at {self._db_path}: {exc}"
+                ) from exc
 
     @staticmethod
     def _init_schema(conn: sqlite3.Connection) -> None:
@@ -129,15 +134,20 @@ class UsageStore:
         Returns ``0.0`` if the project has no recorded usage or on DB error.
         """
         try:
-            conn = self._get_conn()
-            row = conn.execute(
-                "SELECT total_cost FROM budgets WHERE project = ?",
-                (project,),
-            ).fetchone()
+            with self._lock:
+                conn = self._get_conn()
+                row = conn.execute(
+                    "SELECT total_cost FROM budgets WHERE project = ?",
+                    (project,),
+                ).fetchone()
             if row is None:
                 return 0.0
             return float(row[0])
-        except sqlite3.Error:
+        except sqlite3.Error as exc:
+            warnings.warn(
+                f"Failed to read budget from {self._db_path}: {exc}",
+                stacklevel=2,
+            )
             return 0.0
 
     def get_usage_logs(
@@ -151,17 +161,22 @@ class UsageStore:
         Returns an empty list on DB error.
         """
         try:
-            conn = self._get_conn()
-            cursor = conn.execute(
-                "SELECT id, project, model, input_tokens, output_tokens, "
-                "cost, created_at "
-                "FROM usage_logs WHERE project = ? "
-                "ORDER BY created_at DESC, id DESC LIMIT ?",
-                (project, limit),
+            with self._lock:
+                conn = self._get_conn()
+                cursor = conn.execute(
+                    "SELECT id, project, model, input_tokens, output_tokens, "
+                    "cost, created_at "
+                    "FROM usage_logs WHERE project = ? "
+                    "ORDER BY created_at DESC, id DESC LIMIT ?",
+                    (project, limit),
+                )
+                columns = [desc[0] for desc in cursor.description]
+                return [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
+        except sqlite3.Error as exc:
+            warnings.warn(
+                f"Failed to read usage logs from {self._db_path}: {exc}",
+                stacklevel=2,
             )
-            columns = [desc[0] for desc in cursor.description]
-            return [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
-        except sqlite3.Error:
             return []
 
     def reset_budget(self, project: str) -> None:

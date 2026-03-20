@@ -3,10 +3,43 @@
 from __future__ import annotations
 
 import functools
+import threading
+import warnings
 from collections.abc import Callable
 from typing import Any, TypeVar, overload
 
+from llm_budget.exceptions import BudgetExceededError
+from llm_budget.parsers import auto_detect_usage
+from llm_budget.pricing import default_registry
+from llm_budget.store import UsageStore
+
 F = TypeVar("F", bound=Callable[..., Any])
+
+_default_store: UsageStore | None = None
+_store_lock = threading.Lock()
+
+
+def _get_store() -> UsageStore:
+    """Return the shared module-level UsageStore (lazily created)."""
+    global _default_store
+    if _default_store is not None:
+        return _default_store
+    with _store_lock:
+        if _default_store is not None:
+            return _default_store
+        _default_store = UsageStore()
+        return _default_store
+
+
+def set_store(store: UsageStore | None) -> None:
+    """Inject a custom UsageStore for the decorator to use.
+
+    Pass ``None`` to reset to the default (lazily created) store.
+    Useful for testing or directing storage to a custom database path.
+    """
+    global _default_store
+    with _store_lock:
+        _default_store = store
 
 
 @overload
@@ -39,18 +72,71 @@ def track_costs(
 ) -> F | Callable[[F], F]:
     """Decorator to track costs, enforce budgets, and rate-limit LLM API calls.
 
-    Can be used with or without arguments:
+    Can be used with or without arguments::
+
         @track_costs
         def my_func(): ...
 
         @track_costs(project="my-project", max_budget=10.0)
         def my_func(): ...
+
+    Workflow on each call:
+    1. Check budget (if *max_budget* is set).
+    2. Execute the wrapped function.
+    3. Extract token usage from the response.
+    4. Calculate cost via the pricing registry.
+    5. Log usage to the local SQLite store.
+    6. Return the original response unchanged.
     """
 
     def decorator(func: F) -> F:
         @functools.wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
-            return func(*args, **kwargs)
+            store = _get_store()
+
+            # 1. Pre-call budget check
+            if max_budget is not None:
+                current_cost = store.get_total_cost(project)
+                if current_cost >= max_budget:
+                    raise BudgetExceededError(
+                        f"Budget exceeded for project '{project}': "
+                        f"${current_cost:.4f} >= ${max_budget:.4f}"
+                    )
+
+            # 2. Execute the wrapped function
+            response = func(*args, **kwargs)
+
+            # 3. Extract usage from response
+            usage_info: tuple[str, int, int] | None = None
+
+            if response is not None:
+                usage_info = auto_detect_usage(response)
+
+            if usage_info is None and extract_usage is not None:
+                try:
+                    usage_info = extract_usage(response)
+                except Exception:
+                    warnings.warn(
+                        "extract_usage callback raised an exception; "
+                        "skipping cost tracking for this call.",
+                        stacklevel=2,
+                    )
+                    return response
+
+            if usage_info is None:
+                return response
+
+            detected_model, input_tokens, output_tokens = usage_info
+            effective_model = model if model is not None else detected_model
+
+            # 4. Calculate cost
+            cost = default_registry.get_cost(effective_model, input_tokens, output_tokens)
+
+            # 5. Log usage
+            store.log_usage(project, effective_model, input_tokens, output_tokens, cost)
+
+            # 6. Return original response
+            return response
 
         return wrapper  # type: ignore[return-value]
 

@@ -1095,3 +1095,212 @@ def test_concurrent_decorated_calls_respect_budget(tmp_db_path: str) -> None:
     finally:
         store.close()
         set_store(None)
+
+
+# ---------------------------------------------------------------------------
+# Streaming integration tests
+# ---------------------------------------------------------------------------
+
+
+def test_streaming_openai_end_to_end(tmp_db_path: str) -> None:
+    """OpenAI streaming call through the full decorator pipeline logs cost."""
+    from llm_toll import UsageStore, default_registry, set_store, track_costs
+
+    # -- Mock OpenAI chunk objects (duck-typed) --
+
+    class _Usage:
+        def __init__(self, prompt_tokens: int, completion_tokens: int) -> None:
+            self.prompt_tokens = prompt_tokens
+            self.completion_tokens = completion_tokens
+
+    class _Delta:
+        def __init__(self, content: str | None = None) -> None:
+            self.content = content
+
+    class _Choice:
+        def __init__(self, delta: _Delta) -> None:
+            self.delta = delta
+
+    class _OpenAIChunk:
+        def __init__(
+            self,
+            model: str,
+            choices: list[_Choice],
+            usage: _Usage | None = None,
+        ) -> None:
+            self.model = model
+            self.choices = choices
+            self.usage = usage
+
+    input_tokens = 15
+    output_tokens = 10
+    chunks = [
+        _OpenAIChunk("gpt-4o", [_Choice(_Delta("Hello"))]),
+        _OpenAIChunk("gpt-4o", [_Choice(_Delta(" world"))]),
+        # Final chunk carries usage (stream_options={"include_usage": True})
+        _OpenAIChunk("gpt-4o", [], _Usage(input_tokens, output_tokens)),
+    ]
+
+    store = UsageStore(db_path=tmp_db_path)
+    set_store(store)
+
+    try:
+
+        @track_costs(project="stream-openai-e2e")
+        def call_openai_stream() -> Any:
+            yield from chunks
+
+        result = call_openai_stream()
+        # Consume the stream
+        consumed = list(result)
+        assert len(consumed) == 3
+
+        expected_cost = default_registry.get_cost("gpt-4o", input_tokens, output_tokens)
+        total_cost = store.get_total_cost("stream-openai-e2e")
+        assert total_cost == approx(expected_cost)
+        assert total_cost > 0.0
+    finally:
+        store.close()
+        set_store(None)
+
+
+def test_streaming_anthropic_end_to_end(tmp_db_path: str) -> None:
+    """Anthropic streaming events through the full decorator pipeline log cost."""
+    from llm_toll import UsageStore, default_registry, set_store, track_costs
+
+    # -- Mock Anthropic streaming event objects (duck-typed) --
+
+    class _AnthropicUsageStart:
+        def __init__(self, input_tokens: int) -> None:
+            self.input_tokens = input_tokens
+
+    class _AnthropicUsageEnd:
+        def __init__(self, output_tokens: int) -> None:
+            self.output_tokens = output_tokens
+
+    class _AnthropicMessage:
+        def __init__(self, model: str, usage: _AnthropicUsageStart) -> None:
+            self.model = model
+            self.usage = usage
+
+    class _AnthropicEvent:
+        def __init__(self, type: str, **kwargs: Any) -> None:
+            self.type = type
+            for k, v in kwargs.items():
+                setattr(self, k, v)
+
+    class _ContentDelta:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    input_tokens = 20
+    output_tokens = 12
+    events = [
+        _AnthropicEvent(
+            "message_start",
+            message=_AnthropicMessage(
+                "claude-sonnet-4-20250514", _AnthropicUsageStart(input_tokens)
+            ),
+        ),
+        _AnthropicEvent("content_block_delta", delta=_ContentDelta("Hello")),
+        _AnthropicEvent("content_block_delta", delta=_ContentDelta(" there")),
+        _AnthropicEvent("message_delta", usage=_AnthropicUsageEnd(output_tokens)),
+        _AnthropicEvent("message_stop"),
+    ]
+
+    store = UsageStore(db_path=tmp_db_path)
+    set_store(store)
+
+    try:
+
+        @track_costs(project="stream-anthropic-e2e")
+        def call_anthropic_stream() -> Any:
+            yield from events
+
+        result = call_anthropic_stream()
+        consumed = list(result)
+        assert len(consumed) == 5
+
+        expected_cost = default_registry.get_cost(
+            "claude-sonnet-4-20250514", input_tokens, output_tokens
+        )
+        total_cost = store.get_total_cost("stream-anthropic-e2e")
+        assert total_cost == approx(expected_cost)
+        assert total_cost > 0.0
+    finally:
+        store.close()
+        set_store(None)
+
+
+def test_streaming_with_budget_enforcement(tmp_db_path: str) -> None:
+    """Streaming call with max_budget enforces budget after stream is consumed."""
+    from llm_toll import UsageStore, default_registry, set_store, track_costs
+
+    # -- Mock OpenAI chunks (reuse duck-typing pattern) --
+
+    class _Usage:
+        def __init__(self, prompt_tokens: int, completion_tokens: int) -> None:
+            self.prompt_tokens = prompt_tokens
+            self.completion_tokens = completion_tokens
+
+    class _Delta:
+        def __init__(self, content: str | None = None) -> None:
+            self.content = content
+
+    class _Choice:
+        def __init__(self, delta: _Delta) -> None:
+            self.delta = delta
+
+    class _OpenAIChunk:
+        def __init__(
+            self,
+            model: str,
+            choices: list[_Choice],
+            usage: _Usage | None = None,
+        ) -> None:
+            self.model = model
+            self.choices = choices
+            self.usage = usage
+
+    input_tokens = 500
+    output_tokens = 300
+    per_call_cost = default_registry.get_cost("gpt-4o", input_tokens, output_tokens)
+    # Budget allows exactly 2 calls (with a tiny margin)
+    max_budget = per_call_cost * 2 + 1e-12
+
+    def make_chunks() -> list[_OpenAIChunk]:
+        return [
+            _OpenAIChunk("gpt-4o", [_Choice(_Delta("response"))]),
+            _OpenAIChunk("gpt-4o", [], _Usage(input_tokens, output_tokens)),
+        ]
+
+    store = UsageStore(db_path=tmp_db_path)
+    set_store(store)
+
+    try:
+
+        @track_costs(project="stream-budget-e2e", max_budget=max_budget)
+        def call_llm_stream() -> Any:
+            yield from make_chunks()
+
+        # First call — should succeed and log cost
+        list(call_llm_stream())
+        assert store.get_total_cost("stream-budget-e2e") == approx(per_call_cost)
+
+        # Second call — should also succeed
+        list(call_llm_stream())
+        assert store.get_total_cost("stream-budget-e2e") == approx(per_call_cost * 2)
+
+        # Third call — budget exceeded; streaming still works (chunks yielded)
+        # and cost IS logged (to keep totals accurate), with a warning
+        import warnings as _w
+
+        with _w.catch_warnings():
+            _w.simplefilter("ignore")
+            list(call_llm_stream())
+        total_after_third = store.get_total_cost("stream-budget-e2e")
+        # Cost is logged even when over budget (stream was already consumed)
+        assert total_after_third == approx(per_call_cost * 3)
+    finally:
+        store.close()
+        set_store(None)

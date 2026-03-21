@@ -14,6 +14,7 @@ from llm_toll.parsers import auto_detect_usage
 from llm_toll.pricing import default_registry
 from llm_toll.reporter import CostReporter
 from llm_toll.store import UsageStore
+from llm_toll.streaming import _is_sync_stream, wrap_sync_stream
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -110,10 +111,13 @@ def track_costs(
     Workflow on each call:
     1. Check budget (if *max_budget* is set).
     2. Execute the wrapped function.
-    3. Extract token usage from the response.
-    4. Calculate cost via the pricing registry.
-    5. Log usage to the local SQLite store.
-    6. Return the original response unchanged.
+    3. If the response is a sync generator/stream, wrap it so cost is
+       tracked after the stream is consumed (the wrapper yields chunks
+       through transparently).
+    4. Otherwise, extract token usage from the response object.
+    5. Calculate cost via the pricing registry.
+    6. Log usage to the local SQLite store.
+    7. Return the original response (or wrapped stream) unchanged.
     """
 
     def decorator(func: F) -> F:
@@ -133,6 +137,18 @@ def track_costs(
 
             # 2. Execute the wrapped function
             response = func(*args, **kwargs)
+
+            # 2b. If the response is a sync stream, wrap it for deferred tracking
+            if _is_sync_stream(response):
+                return wrap_sync_stream(
+                    response,
+                    project=project,
+                    model_override=model,
+                    max_budget=max_budget,
+                    store=store,
+                    registry=default_registry,
+                    reporter=_get_reporter(),
+                )
 
             # 3. Extract usage from response
             usage_info: tuple[str, int, int] | None = None

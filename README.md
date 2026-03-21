@@ -59,6 +59,29 @@ def custom_anthropic_call(prompt):
     pass
 ```
 
+### Streaming Support
+
+The decorator automatically detects streaming responses (generators). Cost is tracked after the stream is fully consumed.
+
+```python
+from llm_toll import track_costs
+
+@track_costs(project="my_app", max_budget=5.00)
+def stream_response(text):
+    return client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": text}],
+        stream=True,
+        stream_options={"include_usage": True},  # recommended for accurate counts
+    )
+
+for chunk in stream_response("Hello"):
+    print(chunk.choices[0].delta.content, end="")
+# Cost is logged automatically after the stream completes
+```
+
+> **Note:** For accurate token counts with OpenAI streaming, pass `stream_options={"include_usage": True}`. Without it, output tokens are estimated using a character-based heuristic.
+
 ## Supported Providers
 
 | Provider | SDK Auto-Parsing | Streaming Support | Custom Model Overrides |

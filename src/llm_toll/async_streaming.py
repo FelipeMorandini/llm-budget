@@ -42,12 +42,13 @@ async def wrap_async_stream(
     reporter: CostReporter,
     rate_limiter: RateLimiter | None = None,
 ) -> AsyncGenerator[Any, None]:
-    """Wrap an async streaming response to track cost after exhaustion.
+    """Wrap an async streaming response to track cost when the wrapper ends.
 
-    Yields every chunk through transparently.  After the stream is
-    fully consumed (or the caller breaks out), extracts accumulated
-    usage information, calculates cost, and logs it to the store
-    via :func:`asyncio.to_thread` to avoid blocking the event loop.
+    Yields every chunk through transparently.  Once the returned async
+    generator is exhausted or explicitly closed (e.g. via ``aclose()``),
+    it extracts accumulated usage information, calculates cost, and logs
+    it to the store via :func:`asyncio.to_thread` to avoid blocking the
+    event loop.
     """
     accumulator = StreamAccumulator()
     try:

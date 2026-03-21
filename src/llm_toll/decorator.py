@@ -155,8 +155,12 @@ def track_costs(
                     reporter=_get_reporter(),
                     rate_limiter=limiter,
                 )
-                async for chunk in wrapped:
-                    yield chunk
+                try:
+                    async for chunk in wrapped:
+                        yield chunk
+                finally:
+                    with contextlib.suppress(Exception):
+                        await wrapped.aclose()
 
             return async_gen_wrapper  # type: ignore[return-value]
 

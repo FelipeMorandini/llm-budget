@@ -189,6 +189,10 @@ def _finalize_stream(
     """
     usage_info = accumulator.get_usage()
     if usage_info is None:
+        # Record the request for RPM tracking even though we
+        # could not extract usage (the stream was consumed).
+        if rate_limiter is not None:
+            rate_limiter.record(tokens=0)
         return
 
     detected_model, input_tokens, output_tokens = usage_info

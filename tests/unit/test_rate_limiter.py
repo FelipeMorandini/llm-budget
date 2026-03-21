@@ -274,8 +274,8 @@ class TestThreadSafety:
         barrier = threading.Barrier(10)
 
         def worker() -> None:
-            barrier.wait()
             try:
+                barrier.wait()
                 for _ in range(50):
                     try:
                         limiter.check()

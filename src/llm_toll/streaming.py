@@ -10,6 +10,7 @@ from typing import Any
 
 from llm_toll.exceptions import BudgetExceededError
 from llm_toll.pricing import PricingRegistry
+from llm_toll.rate_limiter import RateLimiter
 from llm_toll.reporter import CostReporter
 from llm_toll.store import UsageStore
 
@@ -175,6 +176,7 @@ def _finalize_stream(
     store: UsageStore,
     registry: PricingRegistry,
     reporter: CostReporter,
+    rate_limiter: RateLimiter | None = None,
 ) -> None:
     """Extract usage from accumulator and log cost.
 
@@ -191,6 +193,9 @@ def _finalize_stream(
 
     detected_model, input_tokens, output_tokens = usage_info
     effective_model = model_override if model_override is not None else detected_model
+
+    if rate_limiter is not None:
+        rate_limiter.record(tokens=input_tokens + output_tokens)
 
     cost = registry.get_cost(effective_model, input_tokens, output_tokens)
 
@@ -225,6 +230,7 @@ def wrap_sync_stream(
     store: UsageStore,
     registry: PricingRegistry,
     reporter: CostReporter,
+    rate_limiter: RateLimiter | None = None,
 ) -> Generator[Any, None, None]:
     """Wrap a sync streaming response to track cost after exhaustion.
 
@@ -247,6 +253,7 @@ def wrap_sync_stream(
                 store=store,
                 registry=registry,
                 reporter=reporter,
+                rate_limiter=rate_limiter,
             )
         finally:
             # Close the underlying SDK stream if it supports it

@@ -50,14 +50,16 @@ from llm_toll import track_costs
 
 @track_costs(
     model="claude-sonnet-4-20250514",
-    rate_limit="50/min",
-    tpm_limit="40000/min",
-    extract_usage=lambda res: (res['in_tokens'], res['out_tokens'])
+    rate_limit=50,       # max 50 requests per minute
+    tpm_limit=40000,     # max 40k tokens per minute
+    extract_usage=lambda res: (res['model'], res['in_tokens'], res['out_tokens'])
 )
 def custom_anthropic_call(prompt):
     # custom logic here
     pass
 ```
+
+Rate limits use a sliding-window algorithm. When a limit is reached, `LocalRateLimitError` is raised with a `retry_after` attribute indicating how long to wait.
 
 ### Streaming Support
 

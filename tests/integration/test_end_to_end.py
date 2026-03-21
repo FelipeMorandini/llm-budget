@@ -192,8 +192,8 @@ def test_rate_limiter_creation_and_check() -> None:
 
     limiter = RateLimiter(rpm=60, tpm=100000)
     assert limiter is not None
-    # check() is a stub — just verify no exception
-    limiter.check(tokens=500)
+    limiter.check()
+    limiter.record(tokens=500)
 
 
 def test_rate_limiter_with_no_limits() -> None:
@@ -201,8 +201,8 @@ def test_rate_limiter_with_no_limits() -> None:
     from llm_toll import RateLimiter
 
     limiter = RateLimiter()
-    limiter.check(tokens=0)
-    limiter.check(tokens=999999)
+    limiter.check()
+    limiter.record(tokens=999999)
 
 
 def test_cost_reporter_report_call() -> None:
@@ -1301,6 +1301,113 @@ def test_streaming_with_budget_enforcement(tmp_db_path: str) -> None:
         total_after_third = store.get_total_cost("stream-budget-e2e")
         # Cost is logged even when over budget (stream was already consumed)
         assert total_after_third == approx(per_call_cost * 3)
+    finally:
+        store.close()
+        set_store(None)
+
+
+# ---------------------------------------------------------------------------
+# Rate limiter enforcement through the decorator
+# ---------------------------------------------------------------------------
+
+
+def test_decorator_rpm_enforcement(tmp_db_path: str) -> None:
+    """rate_limit=3 allows 3 calls, then the 4th raises LocalRateLimitError(rpm)."""
+    from llm_toll import LocalRateLimitError, UsageStore, set_store, track_costs
+
+    store = UsageStore(db_path=tmp_db_path)
+    set_store(store)
+
+    try:
+
+        @track_costs(
+            project="rpm-test",
+            rate_limit=3,
+            extract_usage=lambda _resp: ("gpt-4o", 10, 5),
+        )
+        def call_llm() -> dict[str, Any]:
+            return {"result": "ok"}
+
+        # First 3 calls should succeed
+        for _ in range(3):
+            assert call_llm() == {"result": "ok"}
+
+        # 4th call should be blocked by the RPM limiter
+        with pytest.raises(LocalRateLimitError) as exc_info:
+            call_llm()
+
+        err = exc_info.value
+        assert err.limit_type == "rpm"
+        assert err.retry_after is not None
+        assert err.retry_after > 0
+
+    finally:
+        store.close()
+        set_store(None)
+
+
+def test_decorator_tpm_enforcement(tmp_db_path: str) -> None:
+    """tpm_limit=500 allows 2 calls of 200 tokens, then the 3rd raises LocalRateLimitError(tpm)."""
+    from llm_toll import LocalRateLimitError, UsageStore, set_store, track_costs
+
+    store = UsageStore(db_path=tmp_db_path)
+    set_store(store)
+
+    try:
+        # Each call produces 200 total tokens (100 in + 100 out).
+        # The rate limiter checks *before* the call, so after 2 successful
+        # calls 400 tokens are recorded.  With tpm_limit=400 the 3rd
+        # pre-call check sees 400 >= 400 and blocks it.
+        @track_costs(
+            project="tpm-test",
+            tpm_limit=400,
+            extract_usage=lambda _resp: ("gpt-4o", 100, 100),  # 200 total per call
+        )
+        def call_llm() -> dict[str, Any]:
+            return {"result": "ok"}
+
+        # First 2 calls: 200 + 200 = 400 tokens recorded
+        for _ in range(2):
+            assert call_llm() == {"result": "ok"}
+
+        # 3rd call — pre-call check sees 400 >= 400, raises LocalRateLimitError
+        with pytest.raises(LocalRateLimitError) as exc_info:
+            call_llm()
+
+        err = exc_info.value
+        assert err.limit_type == "tpm"
+        assert err.retry_after is not None
+        assert err.retry_after > 0
+
+    finally:
+        store.close()
+        set_store(None)
+
+
+def test_decorator_no_rate_limit_unlimited(tmp_db_path: str) -> None:
+    """Without rate_limit/tpm_limit, no LocalRateLimitError is raised even after many calls."""
+    from llm_toll import LocalRateLimitError, UsageStore, set_store, track_costs
+
+    store = UsageStore(db_path=tmp_db_path)
+    set_store(store)
+
+    try:
+
+        @track_costs(
+            project="unlimited-test",
+            extract_usage=lambda _resp: ("gpt-4o", 500, 500),
+        )
+        def call_llm() -> dict[str, Any]:
+            return {"result": "ok"}
+
+        # Many calls with high token counts — should never raise LocalRateLimitError
+        for _ in range(50):
+            try:
+                result = call_llm()
+                assert result == {"result": "ok"}
+            except LocalRateLimitError:
+                pytest.fail("LocalRateLimitError raised without rate limits configured")
+
     finally:
         store.close()
         set_store(None)

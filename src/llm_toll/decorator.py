@@ -12,6 +12,7 @@ from typing import Any, TypeVar, overload
 from llm_toll.exceptions import BudgetExceededError
 from llm_toll.parsers import auto_detect_usage
 from llm_toll.pricing import default_registry
+from llm_toll.rate_limiter import RateLimiter
 from llm_toll.reporter import CostReporter
 from llm_toll.store import UsageStore
 from llm_toll.streaming import _is_sync_stream, wrap_sync_stream
@@ -110,17 +111,24 @@ def track_costs(
 
     Workflow on each call:
     1. Check budget (if *max_budget* is set).
-    2. Execute the wrapped function.
-    3. If the response is a sync generator/stream, wrap it so cost is
+    2. Check rate limits (if *rate_limit* or *tpm_limit* is set).
+    3. Execute the wrapped function.
+    4. If the response is a sync generator/stream, wrap it so cost is
        tracked after the stream is consumed (the wrapper yields chunks
        through transparently).
-    4. Otherwise, extract token usage from the response object.
-    5. Calculate cost via the pricing registry.
-    6. Log usage to the local SQLite store.
-    7. Return the original response (or wrapped stream) unchanged.
+    5. Otherwise, extract token usage from the response object.
+    6. Calculate cost via the pricing registry.
+    7. Record tokens for rate limiting, log usage to the local SQLite store.
+    8. Return the original response (or wrapped stream) unchanged.
     """
 
     def decorator(func: F) -> F:
+        limiter = (
+            RateLimiter(rpm=rate_limit, tpm=tpm_limit)
+            if rate_limit is not None or tpm_limit is not None
+            else None
+        )
+
         @functools.wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             store = _get_store()
@@ -135,10 +143,14 @@ def track_costs(
                         max_budget=max_budget,
                     )
 
-            # 2. Execute the wrapped function
+            # 2. Pre-call rate limit check
+            if limiter is not None:
+                limiter.check()
+
+            # 3. Execute the wrapped function
             response = func(*args, **kwargs)
 
-            # 2b. If the response is a sync stream, wrap it for deferred tracking
+            # 4. If the response is a sync stream, wrap it for deferred tracking
             if _is_sync_stream(response):
                 return wrap_sync_stream(
                     response,
@@ -148,9 +160,10 @@ def track_costs(
                     store=store,
                     registry=default_registry,
                     reporter=_get_reporter(),
+                    rate_limiter=limiter,
                 )
 
-            # 3. Extract usage from response
+            # 5. Extract usage from response
             usage_info: tuple[str, int, int] | None = None
 
             if response is not None:
@@ -165,18 +178,29 @@ def track_costs(
                         "skipping cost tracking for this call.",
                         stacklevel=2,
                     )
+                    # Record the request for RPM tracking even though
+                    # we could not extract usage (the API call happened).
+                    if limiter is not None:
+                        limiter.record(tokens=0)
                     return response
 
             if usage_info is None:
+                # Record the request for RPM tracking even when no
+                # usage info is available (the API call still happened).
+                if limiter is not None:
+                    limiter.record(tokens=0)
                 return response
 
             detected_model, input_tokens, output_tokens = usage_info
             effective_model = model if model is not None else detected_model
 
-            # 4. Calculate cost
+            # 6. Record tokens for rate limiting
+            if limiter is not None:
+                limiter.record(tokens=input_tokens + output_tokens)
+
+            # 7. Calculate cost and log usage
             cost = default_registry.get_cost(effective_model, input_tokens, output_tokens)
 
-            # 5. Log usage (atomic budget check when max_budget is set)
             if max_budget is not None:
                 store.log_usage_if_within_budget(
                     project, effective_model, input_tokens, output_tokens, cost, max_budget
@@ -184,11 +208,10 @@ def track_costs(
             else:
                 store.log_usage(project, effective_model, input_tokens, output_tokens, cost)
 
-            # 5b. Report cost
+            # 8. Report cost
             with contextlib.suppress(Exception):
                 _get_reporter().report_call(effective_model, input_tokens, output_tokens, cost)
 
-            # 6. Return original response
             return response
 
         return wrapper  # type: ignore[return-value]

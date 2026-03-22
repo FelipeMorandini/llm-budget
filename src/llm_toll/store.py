@@ -419,6 +419,17 @@ class UsageStore:
                 self._conn.close()
                 self._conn = None
 
+    def __enter__(self) -> UsageStore:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: object,
+    ) -> None:
+        self.close()
+
 
 def _utc_now_iso() -> str:
     """Return the current UTC time as an ISO-8601 string."""

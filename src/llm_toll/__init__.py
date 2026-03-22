@@ -1,5 +1,8 @@
 """llm_toll — Lightweight decorator to track LLM API costs and enforce budgets."""
 
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
+
 from llm_toll.decorator import set_reporter, set_store, track_costs
 from llm_toll.exceptions import (
     BudgetExceededError,
@@ -11,7 +14,10 @@ from llm_toll.rate_limiter import RateLimiter
 from llm_toll.reporter import CostReporter
 from llm_toll.store import UsageStore
 
-__version__ = "0.6.0"
+try:
+    __version__: str = _pkg_version("llm-toll")
+except PackageNotFoundError:
+    __version__ = "0.0.0"
 
 __all__ = [
     "BudgetExceededError",

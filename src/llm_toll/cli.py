@@ -6,7 +6,6 @@ import argparse
 import csv
 import os
 import sys
-from typing import Any
 
 from llm_toll import __version__
 from llm_toll.store import UsageStore
@@ -19,7 +18,7 @@ _CYAN = "\033[36m"
 _BOLD = "\033[1m"
 _RESET = "\033[0m"
 
-_NO_COLOR = bool(os.environ.get("NO_COLOR"))
+_NO_COLOR = "NO_COLOR" in os.environ
 
 
 def _c(text: str, code: str) -> str:
@@ -87,43 +86,29 @@ def _print_table(
 def _cmd_stats(store: UsageStore, args: argparse.Namespace) -> None:
     """Handle --stats command."""
     if args.model:
-        # Per-project breakdown for a specific model
-        logs = store.get_usage_logs_filtered(project=args.project, model=args.model, limit=10000)
-        if not logs:
+        # Per-project breakdown for a specific model (SQL aggregation)
+        summaries = store.get_project_summaries_for_model(args.model)
+        if not summaries:
             print(f"No usage data found for model '{args.model}'.")
             return
 
-        # Aggregate by project
-        agg: dict[str, dict[str, Any]] = {}
-        for log in logs:
-            p = log["project"]
-            if p not in agg:
-                agg[p] = {"cost": 0.0, "in": 0, "out": 0, "calls": 0}
-            agg[p]["cost"] += log["cost"]
-            agg[p]["in"] += log["input_tokens"]
-            agg[p]["out"] += log["output_tokens"]
-            agg[p]["calls"] += 1
-
-        title = f"Usage for model: {args.model}"
-        if args.project:
-            title += f" (project: {args.project})"
-        print(_c(title, _BOLD))
+        print(_c(f"Usage for model: {args.model}", _BOLD))
         print()
 
         headers = ["Project", "Calls", "Input Tokens", "Output Tokens", "Total Cost"]
         rows = []
         total_cost = 0.0
-        for p, d in sorted(agg.items(), key=lambda x: -x[1]["cost"]):
+        for s in summaries:
             rows.append(
                 [
-                    p,
-                    f"{d['calls']:,}",
-                    f"{d['in']:,}",
-                    f"{d['out']:,}",
-                    _cost_color(d["cost"]),
+                    s["project"],
+                    f"{s['call_count']:,}",
+                    f"{s['total_input_tokens']:,}",
+                    f"{s['total_output_tokens']:,}",
+                    _cost_color(s["total_cost"]),
                 ]
             )
-            total_cost += d["cost"]
+            total_cost += s["total_cost"]
 
         rows.append(
             [
@@ -217,7 +202,7 @@ def _cmd_reset(store: UsageStore, args: argparse.Namespace) -> None:
         sys.exit(1)
 
     current = store.get_total_cost(args.project)
-    if current == 0.0:
+    if not current:
         print(f"Project '{args.project}' has no recorded cost.")
         return
 
@@ -227,14 +212,14 @@ def _cmd_reset(store: UsageStore, args: argparse.Namespace) -> None:
 
 def _cmd_export(store: UsageStore, args: argparse.Namespace) -> None:
     """Handle --export csv command."""
-    logs = store.get_usage_logs_filtered(project=args.project, model=args.model, limit=100000)
+    logs = store.get_usage_logs_filtered(project=args.project, model=args.model, limit=0)
     if not logs:
         print("No usage data to export.", file=sys.stderr)
         sys.exit(1)
 
     output = open(args.output, "w", newline="") if args.output else sys.stdout  # noqa: SIM115
     try:
-        writer = csv.writer(output)
+        writer = csv.writer(output, lineterminator="\n")
         writer.writerow(
             ["project", "model", "input_tokens", "output_tokens", "cost", "created_at"]
         )

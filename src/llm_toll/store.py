@@ -323,6 +323,34 @@ class UsageStore:
             )
             return []
 
+    def get_project_summaries_for_model(self, model: str) -> list[dict[str, Any]]:
+        """Return aggregated usage stats per project for a specific model.
+
+        Each dict contains ``project``, ``total_cost``,
+        ``total_input_tokens``, ``total_output_tokens``, and ``call_count``.
+        """
+        try:
+            with self._lock:
+                conn = self._get_conn()
+                cursor = conn.execute(
+                    "SELECT project, "
+                    "SUM(cost) AS total_cost, "
+                    "SUM(input_tokens) AS total_input_tokens, "
+                    "SUM(output_tokens) AS total_output_tokens, "
+                    "COUNT(*) AS call_count "
+                    "FROM usage_logs WHERE model = ? "
+                    "GROUP BY project ORDER BY total_cost DESC",
+                    (model,),
+                )
+                columns = [desc[0] for desc in cursor.description]
+                return [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
+        except sqlite3.Error as exc:
+            warnings.warn(
+                f"Failed to read project summaries from {self._db_path}: {exc}",
+                stacklevel=2,
+            )
+            return []
+
     def get_usage_logs_filtered(
         self,
         project: str | None = None,
@@ -346,11 +374,14 @@ class UsageStore:
                     clauses.append("model = ?")
                     params.append(model)
                 where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
-                params.append(limit)
+                limit_clause = ""
+                if limit > 0:
+                    limit_clause = " LIMIT ?"
+                    params.append(limit)
                 cursor = conn.execute(
                     "SELECT id, project, model, input_tokens, output_tokens, "
                     f"cost, created_at FROM usage_logs{where} "
-                    "ORDER BY created_at DESC, id DESC LIMIT ?",
+                    f"ORDER BY created_at DESC, id DESC{limit_clause}",
                     params,
                 )
                 columns = [desc[0] for desc in cursor.description]

@@ -135,4 +135,4 @@ class TestLiteLLMCallback:
         single_cost = store2.get_total_cost("e2e")
 
         assert single_cost > 0
-        assert abs(total - 3 * single_cost) < 1e-12
+        assert total == pytest.approx(3 * single_cost)

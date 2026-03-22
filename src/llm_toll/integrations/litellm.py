@@ -12,16 +12,19 @@ from llm_toll.store import UsageStore
 
 
 def _normalize_model(model: str) -> str:
-    """Strip LiteLLM provider prefix if the raw name isn't in the registry.
+    """Strip LiteLLM provider prefix when the suffix is a known model.
 
     LiteLLM uses model strings like ``"openai/gpt-4o"`` or
-    ``"anthropic/claude-sonnet-4-20250514"``.  If the full name has no
-    pricing entry, try the part after the first ``/``.
+    ``"anthropic/claude-sonnet-4-20250514"``.  The prefix is stripped
+    only when the suffix (e.g. ``"gpt-4o"``) is already registered in
+    the pricing registry.  This preserves namespace-prefixed models
+    like ``"ollama/llama3"`` that rely on the ``"ollama/"`` pricing
+    prefix.
     """
-    if default_registry.has_model(model):
+    if "/" not in model:
         return model
-    if "/" in model:
-        _, _, suffix = model.partition("/")
+    _, _, suffix = model.partition("/")
+    if suffix and default_registry.has_model(suffix):
         return suffix
     return model
 

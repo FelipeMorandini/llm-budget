@@ -74,6 +74,9 @@ dmypy.txt
 # SQLite database (default storage)
 .llm_toll.db
 
+# MkDocs build output
+site/
+
 # OS files
 .DS_Store
 Thumbs.db

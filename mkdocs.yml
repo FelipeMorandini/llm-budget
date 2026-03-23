@@ -1,0 +1,70 @@
+site_name: llm-toll
+site_description: Lightweight drop-in Python decorator to track LLM API costs
+site_url: https://felipemorandini.github.io/llm-toll/
+repo_url: https://github.com/FelipeMorandini/llm-toll
+repo_name: FelipeMorandini/llm-toll
+
+theme:
+  name: material
+  palette:
+    - scheme: slate
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+    - scheme: default
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - content.code.copy
+    - search.highlight
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - admonition
+  - pymdownx.details
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Installation: getting-started/installation.md
+    - Quick Start: getting-started/quickstart.md
+  - Features:
+    - Cost Tracking: features/cost-tracking.md
+    - Budget Enforcement: features/budget-enforcement.md
+    - Rate Limiting: features/rate-limiting.md
+    - Streaming: features/streaming.md
+    - Async Support: features/async-support.md
+  - Providers:
+    - OpenAI: providers/openai.md
+    - Anthropic: providers/anthropic.md
+    - Gemini: providers/gemini.md
+    - Local/Ollama: providers/local-ollama.md
+  - Integrations:
+    - LiteLLM: integrations/litellm.md
+    - LangChain: integrations/langchain.md
+  - Infrastructure:
+    - CLI Dashboard: infrastructure/cli.md
+    - Web Dashboard: infrastructure/web-dashboard.md
+    - PostgreSQL Backend: infrastructure/postgresql.md
+    - Pricing Updates: infrastructure/pricing-updates.md
+  - API Reference:
+    - track_costs: api/track-costs.md
+    - UsageStore: api/usage-store.md
+    - PricingRegistry: api/pricing-registry.md
+    - RateLimiter: api/rate-limiter.md
+    - Exceptions: api/exceptions.md
+  - Changelog: changelog.md

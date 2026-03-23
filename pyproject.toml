@@ -32,6 +32,8 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.10",
     "pre-commit>=3.7",
+    "mkdocs>=1.6",
+    "mkdocs-material>=9.5",
 ]
 openai = ["openai>=1.0"]
 anthropic = ["anthropic>=0.25"]

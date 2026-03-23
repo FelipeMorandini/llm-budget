@@ -123,59 +123,60 @@ class TestDashboardAPI:
         self.base_url = f"http://127.0.0.1:{self.port}"
         yield
         self.server.shutdown()
+        self.server.server_close()
         self.store.close()
 
     def test_index_returns_html(self) -> None:
         """GET / returns 200 with HTML containing 'llm-toll'."""
-        resp = urlopen(f"{self.base_url}/")
-        assert resp.status == 200
-        body = resp.read().decode("utf-8")
-        assert "llm-toll" in body
-        assert resp.headers.get("Content-Type", "").startswith("text/html")
+        with urlopen(f"{self.base_url}/") as resp:
+            assert resp.status == 200
+            body = resp.read().decode("utf-8")
+            assert "llm-toll" in body
+            assert resp.headers.get("Content-Type", "").startswith("text/html")
 
     def test_api_summary(self) -> None:
         """GET /api/summary returns JSON with expected keys and values."""
-        resp = urlopen(f"{self.base_url}/api/summary")
-        assert resp.status == 200
-        data = json.loads(resp.read())
-        assert "total_cost" in data
-        assert "total_calls" in data
-        assert "project_count" in data
-        assert "model_count" in data
-        assert data["total_calls"] == 3
-        assert data["project_count"] == 2
-        assert data["model_count"] == 2
-        assert data["total_cost"] == pytest.approx(0.035)
+        with urlopen(f"{self.base_url}/api/summary") as resp:
+            assert resp.status == 200
+            data = json.loads(resp.read())
+            assert "total_cost" in data
+            assert "total_calls" in data
+            assert "project_count" in data
+            assert "model_count" in data
+            assert data["total_calls"] == 3
+            assert data["project_count"] == 2
+            assert data["model_count"] == 2
+            assert data["total_cost"] == pytest.approx(0.035)
 
     def test_api_trends(self) -> None:
         """GET /api/trends returns a JSON array."""
-        resp = urlopen(f"{self.base_url}/api/trends")
-        assert resp.status == 200
-        data = json.loads(resp.read())
-        assert isinstance(data, list)
-        assert len(data) >= 1
-        assert "date" in data[0]
-        assert "daily_cost" in data[0]
+        with urlopen(f"{self.base_url}/api/trends") as resp:
+            assert resp.status == 200
+            data = json.loads(resp.read())
+            assert isinstance(data, list)
+            assert len(data) >= 1
+            assert "date" in data[0]
+            assert "daily_cost" in data[0]
 
     def test_api_projects(self) -> None:
         """GET /api/projects returns a JSON array with project summaries."""
-        resp = urlopen(f"{self.base_url}/api/projects")
-        assert resp.status == 200
-        data = json.loads(resp.read())
-        assert isinstance(data, list)
-        assert len(data) == 2
-        projects = {row["project"] for row in data}
-        assert projects == {"my-project", "other-project"}
+        with urlopen(f"{self.base_url}/api/projects") as resp:
+            assert resp.status == 200
+            data = json.loads(resp.read())
+            assert isinstance(data, list)
+            assert len(data) == 2
+            projects = {row["project"] for row in data}
+            assert projects == {"my-project", "other-project"}
 
     def test_api_models(self) -> None:
         """GET /api/models returns a JSON array with model summaries."""
-        resp = urlopen(f"{self.base_url}/api/models")
-        assert resp.status == 200
-        data = json.loads(resp.read())
-        assert isinstance(data, list)
-        assert len(data) == 2
-        models = {row["model"] for row in data}
-        assert models == {"gpt-4o", "claude-sonnet-4-20250514"}
+        with urlopen(f"{self.base_url}/api/models") as resp:
+            assert resp.status == 200
+            data = json.loads(resp.read())
+            assert isinstance(data, list)
+            assert len(data) == 2
+            models = {row["model"] for row in data}
+            assert models == {"gpt-4o", "claude-sonnet-4-20250514"}
 
     def test_api_unknown_path_returns_404(self) -> None:
         """GET /unknown returns 404."""

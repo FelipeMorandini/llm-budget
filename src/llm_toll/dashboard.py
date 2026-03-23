@@ -137,23 +137,39 @@ async function refresh() {
     }
   });
 
+  // Helper to safely create a table cell with text content
+  function addCell(row, text, className) {
+    const td = document.createElement('td');
+    td.textContent = text;
+    if (className) td.className = className;
+    row.appendChild(td);
+  }
+
   // Projects table
   const pBody = document.querySelector('#projects-table tbody');
-  pBody.innerHTML = projects.map(p =>
-    `<tr><td>${p.project}</td><td class="right">${fmt(p.call_count)}</td>` +
-    `<td class="right">${fmt(p.total_input_tokens)}</td>` +
-    `<td class="right">${fmt(p.total_output_tokens)}</td>` +
-    `<td class="right">${fmtCost(p.total_cost)}</td></tr>`
-  ).join('');
+  pBody.innerHTML = '';
+  projects.forEach(p => {
+    const row = document.createElement('tr');
+    addCell(row, p.project);
+    addCell(row, fmt(p.call_count), 'right');
+    addCell(row, fmt(p.total_input_tokens), 'right');
+    addCell(row, fmt(p.total_output_tokens), 'right');
+    addCell(row, fmtCost(p.total_cost), 'right');
+    pBody.appendChild(row);
+  });
 
   // Models table
   const mBody = document.querySelector('#models-table tbody');
-  mBody.innerHTML = models.map(m =>
-    `<tr><td>${m.model}</td><td class="right">${fmt(m.call_count)}</td>` +
-    `<td class="right">${fmt(m.total_input_tokens)}</td>` +
-    `<td class="right">${fmt(m.total_output_tokens)}</td>` +
-    `<td class="right">${fmtCost(m.total_cost)}</td></tr>`
-  ).join('');
+  mBody.innerHTML = '';
+  models.forEach(m => {
+    const row = document.createElement('tr');
+    addCell(row, m.model);
+    addCell(row, fmt(m.call_count), 'right');
+    addCell(row, fmt(m.total_input_tokens), 'right');
+    addCell(row, fmt(m.total_output_tokens), 'right');
+    addCell(row, fmtCost(m.total_cost), 'right');
+    mBody.appendChild(row);
+  });
 }
 
 refresh();
@@ -185,7 +201,10 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
         elif path == "/api/summary":
             self._handle_summary()
         elif path == "/api/trends":
-            days = int(params.get("days", ["30"])[0])
+            try:
+                days = int(params.get("days", ["30"])[0])
+            except (ValueError, IndexError):
+                days = 30
             self._send_json(self.store.get_daily_cost_trends(days=days))
         elif path == "/api/projects":
             self._send_json(self.store.get_all_project_summaries())
@@ -195,7 +214,10 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self._send_json(self.store.get_budget_utilization())
         elif path == "/api/logs":
             project = params.get("project", [None])[0]
-            limit = int(params.get("limit", ["1000"])[0])
+            try:
+                limit = int(params.get("limit", ["1000"])[0])
+            except (ValueError, IndexError):
+                limit = 1000
             self._send_json(self.store.get_usage_logs_filtered(project=project, limit=limit))
         else:
             self.send_error(404, "Not Found")
